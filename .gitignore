@@ -37,6 +37,12 @@ Thumbs.db
 测试集/
 训练集/
 
+# Augmented dataset — tracked with Git LFS
+# (images > 100KB get tracked by LFS)
+
+# Augmented output (too large for GitHub, generated locally)
+AIC2026_Train_Augmented/
+
 # Claude Code
 .claude/
 

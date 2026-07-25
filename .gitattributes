@@ -1,0 +1,2 @@
+AIC2026_Train_Augmented/**/*.jpg filter=lfs diff=lfs merge=lfs -text
+AIC2026_Train_Augmented/**/*.png filter=lfs diff=lfs merge=lfs -text
