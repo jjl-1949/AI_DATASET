@@ -1,0 +1,47 @@
+{
+  "input": "E:\\AI_DATASET\\训练集\\AIC2026_Train_2000",
+  "output": "E:\\AI_DATASET\\AIC2026_Train_Augmented",
+  "seed": 42,
+  "mosaic_count": 200,
+  "online_aug_count": 300,
+  "original_frames": 2000,
+  "cp_frames": 4186,
+  "mosaic_frames": 200,
+  "online_aug_frames": 300,
+  "total_frames": 6686,
+  "class_multipliers": {
+    "0": 1.0,
+    "2": 1.0,
+    "6": 1.5,
+    "8": 1.5,
+    "4": 2.0,
+    "5": 2.0,
+    "3": 3.0,
+    "9": 5.0,
+    "10": 7.0,
+    "1": 10.0,
+    "7": 15.0,
+    "11": 50.0
+  },
+  "rare_classes": [
+    1,
+    7,
+    9,
+    10,
+    11
+  ],
+  "class_counts_before": {
+    "0": 5496,
+    "1": 135,
+    "2": 3061,
+    "3": 621,
+    "4": 809,
+    "5": 665,
+    "6": 1571,
+    "7": 89,
+    "8": 1455,
+    "9": 282,
+    "10": 204,
+    "11": 25
+  }
+}
