@@ -29,7 +29,10 @@ Thumbs.db
 # Jupyter Notebook
 .ipynb_checkpoints/
 
-# Dataset files (large archives & extracted folders)
+# Augmented dataset (tracked files stay tracked; new batches stay local)
+AIC2026_Train_Augmented/
+
+# Dataset archives (large files, keep on disk only)
 *.zip
 *.tar
 *.tar.gz
@@ -37,11 +40,23 @@ Thumbs.db
 测试集/
 训练集/
 
-# Augmented dataset — tracked with Git LFS
-# (images > 100KB get tracked by LFS)
+# Model checkpoints & saved models
+*.pth
+*.pt
+*.h5
+*.hdf5
+*.keras
+*.ckpt
+*.onnx
+checkpoints/
+saved_models/
 
-# Augmented output (too large for GitHub, generated locally)
-AIC2026_Train_Augmented/
+# Training outputs
+runs/
+logs/
+wandb/
+output/
+results/
 
 # Claude Code
 .claude/
@@ -49,10 +64,13 @@ AIC2026_Train_Augmented/
 # Python type checker
 .mypy_cache/
 .pytest_cache/
-
-# Logs
-*.log
+.dmypy.json
 
 # Environment variables
 .env
 .env.local
+
+# Misc
+*.log
+*.tmp
+*.bak
