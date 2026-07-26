@@ -29,8 +29,10 @@ Thumbs.db
 # Jupyter Notebook
 .ipynb_checkpoints/
 
-# Augmented dataset (tracked files stay tracked; new batches stay local)
-AIC2026_Train_Augmented/
+# Augmented dataset — ignore all images/data, keep only labels and config
+AIC2026_Train_Augmented/*
+!AIC2026_Train_Augmented/labels/
+!AIC2026_Train_Augmented/augmentation_config.json
 
 # Dataset archives (large files, keep on disk only)
 *.zip
