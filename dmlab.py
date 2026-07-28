@@ -2,12 +2,10 @@
 DMLab (DeepLabV3+ Decoder) — 多尺度上下文解码器
 
 在 DCR-CBAM 融合的多尺度特征之上，通过 ASPP 捕获多尺度上下文，
-结合 P2 低层特征恢复空间细节，输出高分辨率特征图供检测头使用。
+逐级上采样并与各层 skip connection 融合，输出高分辨率特征图。
 
 结构:
-    P5 ──→ ASPP (空洞金字塔池化) → high_level (256ch, /32)
-                                          │ upsample ×8
-    P2 ──→ 1×1 conv → low_level (48ch) ──[concat]──→ 3×3 convs → output (256ch, /4)
+    P5 ──→ ASPP → upsample×2 ──[+P4 skip]──→ upsample×2 ──[+P3 skip]──→ upsample×2 ──[+P2 skip]──→ output
 
 ASPP 分支:
     1×1 conv | 3×3 rate=6 | 3×3 rate=12 | 3×3 rate=18 | Global AvgPool
@@ -72,10 +70,11 @@ class ASPP(nn.Module):
         ])
 
         # ── 全局平均池化分支 ──
+        # NOTE: BN omitted here because AdaptiveAvgPool2d(1) produces (B,C,1,1)
+        # which causes BN to fail with batch_size=1 in training mode.
         self.global_pool = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
         )
 
@@ -119,52 +118,76 @@ class ASPP(nn.Module):
 
 
 # ═══════════════════════════════════════════════════════════════
-# DMLab Decoder (DeepLabV3+ style)
+# DMLab Decoder (DeepLabV3+ style, multi-level skip)
 # ═══════════════════════════════════════════════════════════════
 class DMLabDecoder(nn.Module):
-    """DeepLabV3+ 风格解码器。
+    """DeepLabV3+ 风格解码器 (多级 skip)。
 
-    高层特征 (P5): ASPP 捕获多尺度上下文 → 上采样 ×8
-    低层特征 (P2): 1×1 卷积降维 → skip connection
-    拼接后 3×3 卷积精炼 → 输出 stride-4 高分辨率特征图
+    P5: ASPP 捕获多尺度上下文
+    P4, P3, P2: 逐级上采样 + skip connection
+    全部分支参与前向，确保所有 DCR-CBAM 层级都能获得梯度。
+
+    结构:
+        P5 ──→ ASPP ──→ upsample×2 ─┬─→ conv ──→ upsample×2 ─┬─→ conv ──→ upsample×2 ─┬─→ conv → output
+                       P4 ──[1×1]──┘            P3 ──[1×1]──┘            P2 ──[1×1]──┘
     """
 
     def __init__(self,
-                 low_level_channels: int = 256,
-                 high_level_channels: int = 256,
-                 low_level_out: int = 48,
+                 channels: int = 256,
+                 skip_out: int = 48,
                  out_channels: int = 256,
                  aspp_rates: list[int] | None = None):
         super().__init__()
 
-        # ── ASPP on high-level (P5) ──
-        self.aspp = ASPP(high_level_channels, high_level_channels, aspp_rates)
+        # ── ASPP on P5 (coarsest) ──
+        self.aspp = ASPP(channels, channels, aspp_rates)
 
-        # ── Low-level projection (P2) ──
-        self.low_level_conv = nn.Sequential(
-            nn.Conv2d(low_level_channels, low_level_out, kernel_size=1,
-                      bias=False),
-            nn.BatchNorm2d(low_level_out),
+        # ── Skip projections: P4, P3, P2 → skip_out channels ──
+        # P4 skip (stride 16)
+        self.skip_p4 = nn.Sequential(
+            nn.Conv2d(channels, skip_out, kernel_size=1, bias=False),
+            nn.BatchNorm2d(skip_out),
+            nn.ReLU(inplace=True),
+        )
+        # P3 skip (stride 8)
+        self.skip_p3 = nn.Sequential(
+            nn.Conv2d(channels, skip_out, kernel_size=1, bias=False),
+            nn.BatchNorm2d(skip_out),
+            nn.ReLU(inplace=True),
+        )
+        # P2 skip (stride 4)
+        self.skip_p2 = nn.Sequential(
+            nn.Conv2d(channels, skip_out, kernel_size=1, bias=False),
+            nn.BatchNorm2d(skip_out),
             nn.ReLU(inplace=True),
         )
 
-        # ── High-level after upsample ──
-        self.high_level_conv = nn.Sequential(
-            nn.Conv2d(high_level_channels, out_channels, kernel_size=3,
+        # ── Fusion after each upsample step ──
+        # P5→P4: ASPP out (channels) + P4 skip (skip_out)
+        self.fuse_p4 = nn.Sequential(
+            nn.Conv2d(channels + skip_out, channels, kernel_size=3,
                       padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            nn.BatchNorm2d(channels),
+            nn.ReLU(inplace=True),
+        )
+        # P4→P3: fused (channels) + P3 skip (skip_out)
+        self.fuse_p3 = nn.Sequential(
+            nn.Conv2d(channels + skip_out, channels, kernel_size=3,
+                      padding=1, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.ReLU(inplace=True),
+        )
+        # P3→P2: fused (channels) + P2 skip (skip_out)
+        self.fuse_p2 = nn.Sequential(
+            nn.Conv2d(channels + skip_out, channels, kernel_size=3,
+                      padding=1, bias=False),
+            nn.BatchNorm2d(channels),
             nn.ReLU(inplace=True),
         )
 
-        # ── Fusion: low_level_out + out_channels → out_channels ──
-        self.fuse_conv1 = nn.Sequential(
-            nn.Conv2d(low_level_out + out_channels, out_channels,
-                      kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-        )
-        self.fuse_conv2 = nn.Sequential(
-            nn.Conv2d(out_channels, out_channels, kernel_size=3,
+        # ── Final refinement ──
+        self.output_conv = nn.Sequential(
+            nn.Conv2d(channels, out_channels, kernel_size=3,
                       padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
@@ -180,34 +203,42 @@ class DMLabDecoder(nn.Module):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
-    def forward(self, low_level: torch.Tensor,
-                high_level: torch.Tensor) -> torch.Tensor:
+    def forward(self, p2: torch.Tensor, p3: torch.Tensor,
+                p4: torch.Tensor, p5: torch.Tensor) -> torch.Tensor:
         """前向传播。
 
         Args:
-            low_level:  P2 特征 (B, low_level_channels, H/4, W/4)
-            high_level: P5 特征 (B, high_level_channels, H/32, W/32)
+            p2: stride-4  特征 (B, channels, H/4,  W/4)
+            p3: stride-8  特征 (B, channels, H/8,  W/8)
+            p4: stride-16 特征 (B, channels, H/16, W/16)
+            p5: stride-32 特征 (B, channels, H/32, W/32)
 
         Returns:
             解码后特征 (B, out_channels, H/4, W/4)
         """
-        # 1. ASPP on high-level
-        high = self.aspp(high_level)          # (B, 256, H/32, W/32)
+        # 1. ASPP on P5
+        feat = self.aspp(p5)                            # (B, 256, H/32, W/32)
 
-        # 2. Upsample high-level ×8 to match low-level spatial size
-        high_up = F.interpolate(high, size=low_level.shape[2:],
-                                mode="bilinear", align_corners=False)
-        high_up = self.high_level_conv(high_up)  # (B, 256, H/4, W/4)
+        # 2. P5→P4: upsample ×2, concat with P4 skip
+        feat = F.interpolate(feat, size=p4.shape[2:],
+                             mode="bilinear", align_corners=False)
+        skip4 = self.skip_p4(p4)
+        feat = self.fuse_p4(torch.cat([feat, skip4], dim=1))  # (B, 256, H/16, W/16)
 
-        # 3. Low-level projection
-        low = self.low_level_conv(low_level)     # (B, 48, H/4, W/4)
+        # 3. P4→P3: upsample ×2, concat with P3 skip
+        feat = F.interpolate(feat, size=p3.shape[2:],
+                             mode="bilinear", align_corners=False)
+        skip3 = self.skip_p3(p3)
+        feat = self.fuse_p3(torch.cat([feat, skip3], dim=1))  # (B, 256, H/8, W/8)
 
-        # 4. Concat + refine
-        fused = torch.cat([high_up, low], dim=1)  # (B, 304, H/4, W/4)
-        fused = self.fuse_conv1(fused)            # (B, 256, H/4, W/4)
-        fused = self.fuse_conv2(fused)            # (B, 256, H/4, W/4)
+        # 4. P3→P2: upsample ×2, concat with P2 skip
+        feat = F.interpolate(feat, size=p2.shape[2:],
+                             mode="bilinear", align_corners=False)
+        skip2 = self.skip_p2(p2)
+        feat = self.fuse_p2(torch.cat([feat, skip2], dim=1))  # (B, 256, H/4, W/4)
 
-        return fused
+        # 5. Final refinement
+        return self.output_conv(feat)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -217,30 +248,23 @@ class DMLab(nn.Module):
     """DMLab 多尺度上下文解码器。
 
     接收 DCR-CBAM 融合后的多尺度特征 (P2–P5)，
-    通过 ASPP 多尺度上下文捕获 + P2 skip connection 空间细节恢复，
+    通过 ASPP 多尺度上下文捕获 + 逐级 skip connection，
     输出单一 stride-4 高分辨率特征图。
 
     Args:
-        low_level_key:  低层特征的 key (默认 "P2")
-        high_level_key: 高层特征的 key (默认 "P5")
-        low_level_channels: 低层输入通道 (默认 256)
-        high_level_channels: 高层输入通道 (默认 256)
-        out_channels:   输出通道数 (默认 256)
+        channels:       特征通道数 (默认 256)
+        skip_out:       skip 分支输出通道数 (默认 48)
+        out_channels:   最终输出通道数 (默认 256)
     """
 
     def __init__(self,
-                 low_level_key: str = "P2",
-                 high_level_key: str = "P5",
-                 low_level_channels: int = 256,
-                 high_level_channels: int = 256,
+                 channels: int = 256,
+                 skip_out: int = 48,
                  out_channels: int = 256):
         super().__init__()
-        self.low_key = low_level_key
-        self.high_key = high_level_key
-
         self.decoder = DMLabDecoder(
-            low_level_channels=low_level_channels,
-            high_level_channels=high_level_channels,
+            channels=channels,
+            skip_out=skip_out,
             out_channels=out_channels,
         )
 
@@ -253,16 +277,16 @@ class DMLab(nn.Module):
         Returns:
             解码后特征 (B, out_channels, H/4, W/4)
         """
-        return self.decoder(feats[self.low_key], feats[self.high_key])
+        return self.decoder(feats["P2"], feats["P3"], feats["P4"], feats["P5"])
 
 
 # ── 快速验证 ──────────────────────────────────────────────────
 def _test():
     print("=" * 60)
-    print("[DMLab] DeepLabV3+ Decoder")
+    print("[DMLab] DeepLabV3+ Decoder (multi-level skip)")
     B, H, W = 2, 640, 640
 
-    # 模拟 DCR-CBAM 融合后的多尺度特征 (FPN 输出格式)
+    # 模拟 DCR-CBAM 融合后的多尺度特征
     feats = {
         "P2": torch.randn(B, 256, H // 4,  W // 4),
         "P3": torch.randn(B, 256, H // 8,  W // 8),
@@ -275,48 +299,64 @@ def _test():
     aspp = ASPP(in_channels=256, out_channels=256)
     aspp.train()
     aspp_out = aspp(feats["P5"])
-    assert aspp_out.shape == feats["P5"].shape, \
-        f"ASPP: {tuple(aspp_out.shape)} != {tuple(feats['P5'].shape)}"
+    assert aspp_out.shape == feats["P5"].shape
     print(f"  Input:  {tuple(feats['P5'].shape)}")
     print(f"  Output: {tuple(aspp_out.shape)}  OK")
 
-    # ── 测试 DMLabDecoder ──
-    print("\n[DMLabDecoder]")
-    decoder = DMLabDecoder(
-        low_level_channels=256, high_level_channels=256,
-        low_level_out=48, out_channels=256,
-    )
+    # ── 测试 DMLabDecoder (新: 多级 skip) ──
+    print("\n[DMLabDecoder] P5→P4→P3→P2 decoder")
+    decoder = DMLabDecoder(channels=256, skip_out=48, out_channels=256)
     decoder.train()
-    dec_out = decoder(feats["P2"], feats["P5"])
+    dec_out = decoder(feats["P2"], feats["P3"], feats["P4"], feats["P5"])
     expected_shape = (B, 256, H // 4, W // 4)
     assert dec_out.shape == expected_shape, \
         f"Decoder: {tuple(dec_out.shape)} != {expected_shape}"
-    print(f"  P2 (low):   {tuple(feats['P2'].shape)}")
-    print(f"  P5 (high):  {tuple(feats['P5'].shape)}")
-    print(f"  Output:     {tuple(dec_out.shape)}  OK")
+    print(f"  P5 (input):  {tuple(feats['P5'].shape)}")
+    print(f"  P4 (skip):   {tuple(feats['P4'].shape)}")
+    print(f"  P3 (skip):   {tuple(feats['P3'].shape)}")
+    print(f"  P2 (skip):   {tuple(feats['P2'].shape)}")
+    print(f"  Output:      {tuple(dec_out.shape)}  OK")
 
     # ── 测试 DMLab 顶层 ──
     print("\n[DMLab]")
-    model = DMLab()
+    model = DMLab(channels=256, skip_out=48, out_channels=256)
     model.train()
     out = model(feats)
-    assert out.shape == (B, 256, H // 4, W // 4), \
-        f"DMLab: {tuple(out.shape)} != (B, 256, H//4, W//4)"
+    assert out.shape == (B, 256, H // 4, W // 4)
     print(f"  Input keys: {list(feats.keys())}")
     print(f"  Output:     {tuple(out.shape)}  OK")
 
     # ── 非正方形输入测试 ──
-    print("\n[Non-square input]")
+    print("\n[Non-square input 360x640]")
     H2, W2 = 360, 640
     feats2 = {
         "P2": torch.randn(B, 256, H2 // 4,  W2 // 4),
+        "P3": torch.randn(B, 256, H2 // 8,  W2 // 8),
+        "P4": torch.randn(B, 256, H2 // 16, W2 // 16),
         "P5": torch.randn(B, 256, H2 // 32, W2 // 32),
     }
-    dec_out2 = decoder(feats2["P2"], feats2["P5"])
-    assert dec_out2.shape == feats2["P2"].shape, \
-        f"Non-square: {tuple(dec_out2.shape)} != {tuple(feats2['P2'].shape)}"
-    print(f"  Input:  {tuple(feats2['P2'].shape)} (stride 4)")
+    dec_out2 = decoder(feats2["P2"], feats2["P3"], feats2["P4"], feats2["P5"])
+    assert dec_out2.shape == feats2["P2"].shape
+    print(f"  P2:     {tuple(feats2['P2'].shape)}")
     print(f"  Output: {tuple(dec_out2.shape)}  OK")
+
+    # ── 梯度流验证: 所有 skip 层级必须获得梯度 ──
+    print("\n[Gradient flow: all levels]")
+    model.train()
+    dmlab_out = model(feats)
+    loss = dmlab_out.mean()
+    loss.backward()
+    grad_ok = all(
+        p.grad is not None
+        for n, p in model.named_parameters()
+        if p.requires_grad
+    )
+    if grad_ok:
+        print(f"  ALL parameters have gradients: OK")
+    else:
+        missing = [n for n, p in model.named_parameters()
+                   if p.requires_grad and p.grad is None]
+        print(f"  MISSING: {missing}")
 
     # ── 参数量 ──
     total = sum(p.numel() for p in model.parameters())

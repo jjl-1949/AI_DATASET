@@ -92,17 +92,30 @@ class DetHead(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        # 分类 & 中心度输出: 标准初始化
+        # Stem convs: Kaiming init — standard for ReLU-activated conv layers
+        # Output convs: small normal init — prevents sigmoid saturation and
+        #   ensures stable initial predictions (FCOS standard).
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode="fan_out",
-                                        nonlinearity="relu")
+                is_output = m in (self.cls_out, self.reg_out, self.ctr_out)
+                if is_output:
+                    # Small init: prevent logit explosion in output layers
+                    nn.init.normal_(m.weight, mean=0.0, std=0.01)
+                else:
+                    nn.init.kaiming_normal_(m.weight, mode="fan_out",
+                                            nonlinearity="relu")
                 if m.bias is not None:
-                    # 分类 bias: 使用 prior_prob 改善训练初期稳定性
                     if m is self.cls_out:
+                        # prior_prob=0.01 → initial output ≈ sigmoid(-4.595) ≈ 0.01
                         prior_prob = 0.01
                         nn.init.constant_(m.bias, -torch.log(
                             torch.tensor((1 - prior_prob) / prior_prob)))
+                    elif m is self.reg_out:
+                        # bias=0 → exp(0)=1 → initial bbox ~1 pixel from center
+                        nn.init.constant_(m.bias, 0.0)
+                    elif m is self.ctr_out:
+                        # bias=0 → sigmoid(0)=0.5 → initial centerness ~0.5
+                        nn.init.constant_(m.bias, 0.0)
                     else:
                         nn.init.constant_(m.bias, 0)
 
@@ -119,8 +132,8 @@ class DetHead(nn.Module):
         cls_logits = self.cls_out(self.cls_convs(x))
 
         # 2. 回归: (B, C, H/4, W/4) → (B, 4, H/4, W/4)
-        #    ReLU 确保 (l, t, r, b) >= 0
-        bbox_preds = torch.relu(self.reg_out(self.reg_convs(x)))
+        #    exp() ensures (l, t, r, b) > 0 with non-zero gradient everywhere
+        bbox_preds = torch.exp(self.reg_out(self.reg_convs(x)))
 
         # 3. 中心度: (B, C, H/4, W/4) → (B, 1, H/4, W/4)
         #    Sigmoid 约束到 [0, 1]
@@ -168,11 +181,11 @@ def _test():
         out2 = head(x)
         print(f"  cls_logits range: [{out2['cls_logits'].min():.3f}, "
               f"{out2['cls_logits'].max():.3f}]")
-        print(f"  bbox_preds min:   {out2['bbox_preds'].min():.6f}  (should be >= 0)")
+        print(f"  bbox_preds min:   {out2['bbox_preds'].min():.6f}  (should be > 0)")
         print(f"  centerness range: [{out2['centerness'].min():.4f}, "
               f"{out2['centerness'].max():.4f}]  (should be in [0,1])")
 
-        assert out2["bbox_preds"].min() >= 0, "bbox_preds should be >= 0"
+        assert out2["bbox_preds"].min() > 0, "bbox_preds should be > 0 (exp())"
         assert 0 <= out2["centerness"].min() <= out2["centerness"].max() <= 1, \
             "centerness should be in [0, 1]"
 

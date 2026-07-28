@@ -73,9 +73,9 @@ class FPN(nn.Module):
             for lv in self.levels
         })
 
-        # ── P6 层 (可选) ──
+        # ── P6 层 (可选): stride-2 maxpool with antialiasing ──
         if extra_level:
-            self.p6_pool = nn.MaxPool2d(kernel_size=1, stride=2)
+            self.p6_pool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
         self._init_weights()
 
