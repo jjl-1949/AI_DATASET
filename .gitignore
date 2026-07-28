@@ -1,7 +1,10 @@
-# Byte-compiled / optimized / DLL files
+# ===========================
+# Python
+# ===========================
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
 
 # Distribution / packaging
 dist/
@@ -14,65 +17,125 @@ venv/
 .venv/
 env/
 .env/
+.python-version
 
+# Type checking
+.mypy_cache/
+.pytest_cache/
+.dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Testing & Coverage
+.coverage
+.coverage.*
+*.cover
+*.prof
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.lcov
+
+# pip
+pip-wheel-metadata/
+
+# ===========================
 # IDE / Editor
+# ===========================
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
+# ===========================
 # OS files
+# ===========================
 .DS_Store
 Thumbs.db
+Desktop.ini
 
+# ===========================
 # Jupyter Notebook
+# ===========================
 .ipynb_checkpoints/
+*.ipynb_checkpoints
 
-# Augmented dataset — ignore all images/data, keep only labels and config
-AIC2026_Train_Augmented/*
+# ===========================
+# Dataset
+# ===========================
+# Augmented training data — ignore all images, keep only labels and config
+AIC2026_Train_Augmented/**
 !AIC2026_Train_Augmented/labels/
 !AIC2026_Train_Augmented/augmentation_config.json
 
-# Dataset archives (large files, keep on disk only)
+# Raw datasets (large files, keep on disk only)
+测试集/
+训练集/
+
+# Dataset archives
 *.zip
 *.tar
 *.tar.gz
 *.rar
-测试集/
-训练集/
+*.7z
 
-# Model checkpoints & saved models
+# ===========================
+# Model files
+# ===========================
 *.pth
 *.pt
+*.pkl
 *.h5
 *.hdf5
 *.keras
 *.ckpt
 *.onnx
+*.tflite
+*.safetensors
 checkpoints/
 saved_models/
 
+# ===========================
 # Training outputs
+# ===========================
 runs/
 logs/
 wandb/
 output/
 results/
+lightning_logs/
+tensorboard/
 
+# ===========================
 # Claude Code
+# ===========================
 .claude/
 
-# Python type checker
-.mypy_cache/
-.pytest_cache/
-.dmypy.json
-
-# Environment variables
+# ===========================
+# Environment
+# ===========================
 .env
 .env.local
+.env.*
 
+# Development
+*.patch
+*.orig
+*.rej
+
+# ===========================
+# Git
+# ===========================
+.git-rewrite/
+
+# ===========================
 # Misc
+# ===========================
 *.log
 *.tmp
 *.bak
+*.swp
+*.swo
